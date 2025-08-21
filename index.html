@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Intranet de Notas y Cotizaciones</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, where, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        window.firebase = {
+            initializeApp,
+            getAuth,
+            signInAnonymously,
+            signInWithCustomToken,
+            onAuthStateChanged,
+            getFirestore,
+            collection,
+            addDoc,
+            onSnapshot,
+            query,
+            where,
+            getDocs
+        };
+        window.appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        window.firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        window.initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+    </script>
+</head>
+<body class="bg-gray-100 font-sans">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+        const { initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, getFirestore, collection, addDoc, onSnapshot } = window.firebase;
+        const appId = window.appId;
+        const firebaseConfig = window.firebaseConfig;
+        const initialAuthToken = window.initialAuthToken;
+
+        // Componente principal de la aplicación
+        const App = () => {
+            // Definir los estados de la aplicación
+            const [currentPage, setCurrentPage] = useState('home');
+            const [notes, setNotes] = useState([]);
+            const [quotes, setQuotes] = useState([]);
+            const [isAuthReady, setIsAuthReady] = useState(false);
+            const [userId, setUserId] = useState(null);
+            const [loading, setLoading] = useState(true);
+
+            // Estado para los formularios
+            const [noteForm, setNoteForm] = useState({
+                clientName: '',
+                date: new Date().toISOString().split('T')[0],
+                items: [{ description: '', amount: 0 }],
+                total: 0
+            });
+            const [quoteForm, setQuoteForm] = useState({
+                clientName: '',
+                date: new Date().toISOString().split('T')[0],
+                items: [{ description: '', amount: 0 }],
+                total: 0
+            });
+            const [message, setMessage] = useState('');
+            const [searchTerm, setSearchTerm] = useState('');
+
+            // Estado para la vista de la base de datos
+            const [databaseView, setDatabaseView] = useState('notes');
+
+            // Efecto para la autenticación y la carga de datos
+            useEffect(() => {
+                // Autenticar al usuario de forma anónima o con el token proporcionado
+                const signIn = async () => {
+                    try {
+                        const app = initializeApp(firebaseConfig);
+                        const auth = getAuth(app);
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (error) {
+                        console.error("Error de autenticación:", error);
+                    }
+                };
+
+                const auth = getAuth(initializeApp(firebaseConfig));
+                const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        setUserId(user.uid);
+                    }
+                    setIsAuthReady(true);
+                    setLoading(false);
+                });
+
+                signIn();
+                return () => unsubscribeAuth();
+            }, []);
+
+            // Efecto para cargar los datos de Firestore una vez que la autenticación está lista
+            useEffect(() => {
+                if (isAuthReady && userId) {
+                    const db = getFirestore(initializeApp(firebaseConfig));
+                    const notesRef = collection(db, `artifacts/${appId}/public/data/notes`);
+                    const quotesRef = collection(db, `artifacts/${appId}/public/data/quotes`);
+
+                    // Suscribirse a los cambios en tiempo real para las notas de entrega
+                    const unsubscribeNotes = onSnapshot(notesRef, (snapshot) => {
+                        const fetchedNotes = snapshot.docs.map(doc => ({
+                            id: doc.id,
+                            ...doc.data()
+                        }));
+                        setNotes(fetchedNotes);
+                    }, (error) => {
+                        console.error("Error al cargar notas:", error);
+                        setMessage('Error al cargar notas de entrega.');
+                    });
+
+                    // Suscribirse a los cambios en tiempo real para las cotizaciones
+                    const unsubscribeQuotes = onSnapshot(quotesRef, (snapshot) => {
+                        const fetchedQuotes = snapshot.docs.map(doc => ({
+                            id: doc.id,
+                            ...doc.data()
+                        }));
+                        setQuotes(fetchedQuotes);
+                    }, (error) => {
+                        console.error("Error al cargar cotizaciones:", error);
+                        setMessage('Error al cargar cotizaciones.');
+                    });
+
+                    // Limpiar las suscripciones al desmontar el componente
+                    return () => {
+                        unsubscribeNotes();
+                        unsubscribeQuotes();
+                    };
+                }
+            }, [isAuthReady, userId]);
+
+            // Manejar los cambios en los formularios
+            const handleNoteChange = (e) => {
+                const { name, value } = e.target;
+                setNoteForm(prev => ({ ...prev, [name]: value }));
+            };
+
+            const handleQuoteChange = (e) => {
+                const { name, value } = e.target;
+                setQuoteForm(prev => ({ ...prev, [name]: value }));
+            };
+
+            const handleItemChange = (type, index, e) => {
+                const { name, value } = e.target;
+                const form = type === 'note' ? noteForm : quoteForm;
+                const setForm = type === 'note' ? setNoteForm : setQuoteForm;
+                
+                const newItems = form.items.map((item, i) => {
+                    if (i === index) {
+                        return { ...item, [name]: name === 'amount' ? parseFloat(value) || 0 : value };
+                    }
+                    return item;
+                });
+
+                const newTotal = newItems.reduce((sum, item) => sum + (item.amount || 0), 0);
+                setForm(prev => ({ ...prev, items: newItems, total: newTotal }));
+            };
+
+            const addItem = (type) => {
+                const setForm = type === 'note' ? setNoteForm : setQuoteForm;
+                setForm(prev => ({
+                    ...prev,
+                    items: [...prev.items, { description: '', amount: 0 }]
+                }));
+            };
+
+            const removeItem = (type, index) => {
+                const setForm = type === 'note' ? setNoteForm : setQuoteForm;
+                setForm(prev => {
+                    const newItems = prev.items.filter((_, i) => i !== index);
+                    const newTotal = newItems.reduce((sum, item) => sum + (item.amount || 0), 0);
+                    return { ...prev, items: newItems, total: newTotal };
+                });
+            };
+
+            // Guardar los documentos en Firestore
+            const saveDocument = async (type) => {
+                try {
+                    const data = type === 'note' ? noteForm : quoteForm;
+                    const collectionName = type === 'note' ? 'notes' : 'quotes';
+                    const db = getFirestore(initializeApp(firebaseConfig));
+                    const docsRef = collection(db, `artifacts/${appId}/public/data/${collectionName}`);
+                    await addDoc(docsRef, { ...data, createdAt: new Date().toISOString() });
+                    
+                    setMessage(`¡${type === 'note' ? 'Nota de Entrega' : 'Cotización'} guardada exitosamente!`);
+                    
+                    // Limpiar el formulario
+                    const setForm = type === 'note' ? setNoteForm : setQuoteForm;
+                    setForm({
+                        clientName: '',
+                        date: new Date().toISOString().split('T')[0],
+                        items: [{ description: '', amount: 0 }],
+                        total: 0
+                    });
+                } catch (error) {
+                    console.error("Error al guardar el documento:", error);
+                    setMessage(`Error al guardar el documento: ${error.message}`);
+                }
+            };
+
+            // Función para manejar la descarga de PDF
+            const handleDownloadPdf = (doc, type) => {
+                const printContent = `
+                    <style>
+                        body { font-family: 'Inter', sans-serif; margin: 0; padding: 0; }
+                        .print-container { width: 210mm; min-height: 297mm; margin: 0 auto; padding: 20mm; box-sizing: border-box; }
+                        .header h1 { font-size: 24px; font-weight: bold; margin: 0; }
+                        .header p { font-size: 14px; color: #555; }
+                        .section { margin-top: 20px; }
+                        .section h2 { font-size: 18px; font-weight: 600; color: #333; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
+                        .details p { font-size: 14px; margin: 5px 0; }
+                        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+                        th, td { border: 1px solid #ccc; padding: 8px; text-align: left; font-size: 14px; }
+                        th { background-color: #f2f2f2; }
+                        .total { text-align: right; font-size: 16px; font-weight: bold; margin-top: 10px; }
+                    </style>
+                    <div class="print-container">
+                        <div class="header">
+                            <h1>${type === 'note' ? 'Nota de Entrega' : 'Cotización'}</h1>
+                            <p>Documento Nº ${doc.id}</p>
+                            <p>Fecha: ${doc.date}</p>
+                        </div>
+                        <div class="section">
+                            <h2>Datos del Cliente</h2>
+                            <div class="details">
+                                <p><strong>Nombre:</strong> ${doc.clientName}</p>
+                            </div>
+                        </div>
+                        <div class="section">
+                            <h2>Detalles</h2>
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Descripción</th>
+                                        <th>Monto</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${doc.items.map(item => `
+                                        <tr>
+                                            <td>${item.description}</td>
+                                            <td>$${item.amount.toFixed(2)}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="total">
+                            Total: $${doc.total.toFixed(2)}
+                        </div>
+                    </div>
+                `;
+
+                const printWindow = window.open('', '', 'height=600,width=800');
+                printWindow.document.write(printContent);
+                printWindow.document.close();
+                printWindow.print();
+            };
+
+            // Componentes de la interfaz de usuario (UI)
+            const renderHome = () => (
+                <div className="flex-1 flex flex-col items-center justify-center p-8">
+                    <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-sm text-center">
+                        <h1 className="text-xl font-bold text-gray-800 mb-4">BIENVENIDO A TU INTRANET</h1>
+                        <div className="flex flex-col items-center space-y-2 text-sm font-medium w-full">
+                            <button onClick={() => setCurrentPage('generate-note')} className="px-4 py-2 w-full rounded-lg bg-black text-white font-semibold shadow-md hover:bg-gray-800 transition transform hover:scale-105">
+                                GENERAR NOTAS DE ENTREGA
+                            </button>
+                            <button onClick={() => setCurrentPage('generate-quote')} className="px-4 py-2 w-full rounded-lg bg-black text-white font-semibold shadow-md hover:bg-gray-800 transition transform hover:scale-105">
+                                GENERAR COTIZACIONES
+                            </button>
+                            <button onClick={() => setCurrentPage('database')} className="px-4 py-2 w-full rounded-lg bg-black text-white font-semibold shadow-md hover:bg-gray-800 transition transform hover:scale-105">
+                                BASE DE DATOS
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+
+            const renderForm = (type) => {
+                const form = type === 'note' ? noteForm : quoteForm;
+                const handleChange = type === 'note' ? handleNoteChange : handleQuoteChange;
+                const handleItem = (index, e) => handleItemChange(type, index, e);
+                const handleSave = () => saveDocument(type);
+
+                return (
+                    <div className="p-8">
+                        <h1 className="text-3xl font-bold text-gray-800 mb-6">
+                            GENERAR {type === 'note' ? 'NOTA DE ENTREGA' : 'COTIZACIÓN'}
+                        </h1>
+                        
+                        <div className="space-y-4 mb-6">
+                            <div>
+                                <label className="block text-gray-700 font-medium">Nombre del Cliente</label>
+                                <input
+                                    type="text"
+                                    name="clientName"
+                                    value={form.clientName}
+                                    onChange={handleChange}
+                                    className="w-full mt-1 p-2 border border-gray-300 rounded-lg shadow-sm"
+                                    required
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-gray-700 font-medium">Fecha</label>
+                                <input
+                                    type="date"
+                                    name="date"
+                                    value={form.date}
+                                    onChange={handleChange}
+                                    className="w-full mt-1 p-2 border border-gray-300 rounded-lg shadow-sm"
+                                    required
+                                />
+                            </div>
+                        </div>
+
+                        <h2 className="text-xl font-semibold text-gray-700 mb-4">Detalles del Servicio/Producto</h2>
+                        <div className="space-y-4 mb-4">
+                            {form.items.map((item, index) => (
+                                <div key={index} className="flex flex-col md:flex-row space-y-2 md:space-y-0 md:space-x-4">
+                                    <input
+                                        type="text"
+                                        name="description"
+                                        value={item.description}
+                                        onChange={(e) => handleItem(index, e)}
+                                        placeholder="Descripción del artículo/servicio"
+                                        className="w-full md:w-3/4 p-2 border border-gray-300 rounded-lg shadow-sm"
+                                    />
+                                    <input
+                                        type="number"
+                                        name="amount"
+                                        value={item.amount}
+                                        onChange={(e) => handleItem(index, e)}
+                                        placeholder="Monto"
+                                        className="w-full md:w-1/4 p-2 border border-gray-300 rounded-lg shadow-sm"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => removeItem(type, index)}
+                                        className="p-2 bg-red-500 text-white rounded-lg shadow hover:bg-red-600 transition"
+                                    >
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+                                            <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zm-2-4h16V7H4v8zm4-11h8V4H8v2z" />
+                                        </svg>
+                                    </button>
+                                </div>
+                            ))}
+                            <button
+                                type="button"
+                                onClick={() => addItem(type)}
+                                className="w-full bg-gray-200 text-gray-700 p-2 rounded-lg shadow-sm hover:bg-gray-300 transition"
+                            >
+                                Agregar Artículo
+                            </button>
+                        </div>
+
+                        <div className="flex justify-end items-center text-lg font-bold text-gray-800 mb-6">
+                            <span>Total:</span>
+                            <span className="ml-2">${form.total.toFixed(2)}</span>
+                        </div>
+
+                        <button
+                            type="button"
+                            onClick={handleSave}
+                            className="w-full bg-blue-600 text-white font-bold py-3 px-6 rounded-lg shadow-lg hover:bg-blue-700 transition transform hover:scale-105"
+                        >
+                            GUARDAR {type === 'note' ? 'NOTA' : 'COTIZACIÓN'}
+                        </button>
+                    </div>
+                );
+            };
+
+            const renderList = (type) => {
+                const data = type === 'note' ? notes : quotes;
+                
+                // Filtrar los datos basados en el término de búsqueda
+                const filteredData = data.filter(doc => 
+                    doc.clientName.toLowerCase().includes(searchTerm.toLowerCase())
+                );
+
+                // Mostrar un mensaje de carga si los datos aún no están listos
+                if (loading || !isAuthReady) {
+                    return <div className="p-8 text-center text-gray-600">Cargando...</div>;
+                }
+
+                return (
+                    <div className="p-8">
+                        <h1 className="text-3xl font-bold text-gray-800 mb-6">
+                            LISTA DE {type === 'note' ? 'NOTAS DE ENTREGA' : 'COTIZACIONES'}
+                        </h1>
+                        
+                        {/* Campo de búsqueda */}
+                        <div className="mb-6">
+                            <input
+                                type="text"
+                                placeholder="Buscar por nombre del cliente..."
+                                value={searchTerm}
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                                className="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            />
+                        </div>
+                        
+                        {message && <div className="mb-4 text-green-600 font-semibold">{message}</div>}
+                        
+                        {filteredData.length === 0 ? (
+                            <p className="text-gray-500">No hay {type === 'note' ? 'notas de entrega' : 'cotizaciones'} que coincidan con la búsqueda.</p>
+                        ) : (
+                            <div className="grid gap-6">
+                                {filteredData.map(doc => (
+                                    <div key={doc.id} className="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                                        <h2 className="text-xl font-bold text-gray-800 mb-2">
+                                            {type === 'note' ? 'Nota' : 'Cotización'} para: {doc.clientName}
+                                        </h2>
+                                        <p className="text-sm text-gray-500 mb-4">Fecha: {doc.date}</p>
+                                        <table className="w-full text-left text-sm text-gray-700 mb-4">
+                                            <thead>
+                                                <tr>
+                                                    <th className="font-semibold pb-2">Descripción</th>
+                                                    <th className="font-semibold pb-2 text-right">Monto</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {doc.items && doc.items.map((item, index) => (
+                                                    <tr key={index} className="border-t border-gray-200">
+                                                        <td className="py-1">{item.description}</td>
+                                                        <td className="py-1 text-right">${item.amount.toFixed(2)}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                        <div className="flex justify-between items-center font-bold text-lg text-gray-800">
+                                            <span>Total: ${doc.total.toFixed(2)}</span>
+                                            <button
+                                                onClick={() => handleDownloadPdf(doc, type)}
+                                                className="bg-blue-600 text-white text-sm font-semibold py-2 px-4 rounded-lg shadow hover:bg-blue-700 transition transform hover:scale-105"
+                                            >
+                                                Descargar PDF
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                );
+            };
+            
+            // Componente para la vista combinada de la base de datos
+            const renderDatabase = () => (
+                <div className="p-8">
+                    <div className="flex space-x-4 mb-6">
+                        <button
+                            onClick={() => setDatabaseView('notes')}
+                            className={`flex-1 py-2 rounded-lg font-bold transition ${databaseView === 'notes' ? 'bg-black text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+                        >
+                            NOTAS DE ENTREGA
+                        </button>
+                        <button
+                            onClick={() => setDatabaseView('quotes')}
+                            className={`flex-1 py-2 rounded-lg font-bold transition ${databaseView === 'quotes' ? 'bg-black text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+                        >
+                            COTIZACIONES
+                        </button>
+                    </div>
+                    {databaseView === 'notes' ? renderList('note') : renderList('quote')}
+                </div>
+            );
+
+            // Renderizar la página actual
+            const renderContent = () => {
+                switch (currentPage) {
+                    case 'generate-note':
+                        return renderForm('note');
+                    case 'generate-quote':
+                        return renderForm('quote');
+                    case 'database':
+                        return renderDatabase();
+                    case 'home':
+                    default:
+                        return renderHome();
+                }
+            };
+
+            return (
+                <div className="min-h-screen bg-gray-100 flex flex-col">
+                    {/* Contenido principal */}
+                    <main className="flex-grow max-w-7xl mx-auto w-full p-4 flex flex-col items-center justify-center">
+                        {renderContent()}
+                    </main>
+
+                    {/* Pie de página con el ID de usuario */}
+                    <footer className="w-full text-center py-4 px-4 bg-gray-200 text-gray-600 text-xs rounded-t-xl">
+                        {userId && (
+                            <p>ID de Usuario: <span className="font-mono break-all">{userId}</span></p>
+                        )}
+                    </footer>
+                </div>
+            );
+        };
+
+        // Renderizar el componente en el DOM
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+
+    </script>
+</body>
+</html>
